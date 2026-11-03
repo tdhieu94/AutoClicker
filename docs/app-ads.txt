@@ -1,0 +1,4 @@
+# Mẫu app-ads.txt cho AdMob. Thay pub-XXXXXXXXXXXXXXXX bằng mã nhà xuất bản AdMob của bạn
+# (AdMob → Ứng dụng → app-ads.txt). File này phải nằm ở GỐC tên miền khai báo trong CH Play,
+# xem docs/PLAY_STORE.md mục 4.
+google.com, pub-XXXXXXXXXXXXXXXX, DIRECT, f08c47fec0942fa0
