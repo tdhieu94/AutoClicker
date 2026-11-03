@@ -22,6 +22,12 @@ Không cần root, không cần quyền "Hiển thị trên ứng dụng khác" 
 3. Quay lại app → **"2. Lưu & hiện bảng điều khiển nổi"**.
 4. Mở app cần auto-click, kéo vòng tròn số tới chỗ cần chạm, bấm ▶.
 
+**Cập nhật**
+- Mỗi lần đẩy mã lên nhánh `main`, GitHub Actions build APK mới (số phiên bản `1.3.<số lần build>`) và đăng lên Releases.
+- Khi mở app, AutoClicker tự kiểm tra bản mới và hỏi *"Có bản mới"*. Bấm **Cập nhật** để tải và cài đè ngay
+  (lần đầu cần cho phép AutoClicker "cài ứng dụng không rõ nguồn gốc"). Có thể kiểm tra thủ công bằng nút *Kiểm tra cập nhật*.
+- App chỉ dùng mạng để đọc `version.json` và tải APK từ GitHub.
+
 **Build APK**
 - Android Studio: mở thư mục `android/`, bấm *Run* hoặc *Build → Build APK(s)*.
 - Dòng lệnh: `cd android && ./gradlew assembleRelease` → `app/build/outputs/apk/release/app-release.apk`.

@@ -61,6 +61,9 @@ class MainActivity : Activity() {
                 moveTaskToBack(true)
             }
         })
+        root.addView(button("Kiểm tra cập nhật (đang dùng ${BuildConfig.VERSION_NAME})") {
+            UpdateChecker.check(this, manual = true)
+        })
         root.addView(TextView(this).apply {
             textSize = 14f
             setPadding(0, dp(24), 0, 0)
@@ -76,6 +79,7 @@ class MainActivity : Activity() {
         })
 
         setContentView(ScrollView(this).apply { addView(root) })
+        if (savedInstanceState == null) UpdateChecker.check(this, manual = false)
     }
 
     override fun onResume() {

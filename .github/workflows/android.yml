@@ -33,6 +33,19 @@ jobs:
         env:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
       - run: cp app/build/outputs/apk/release/app-release.apk AutoClicker.apk
+      # App đọc file này để biết có bản mới (xem UpdateChecker.kt).
+      - name: Write version.json
+        env:
+          NOTES: ${{ github.event.head_commit.message }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          run = int(os.environ["GITHUB_RUN_NUMBER"])
+          notes = (os.environ.get("NOTES") or "").split("\n\n")[0].strip()
+          json.dump({"versionCode": 100 + run, "versionName": f"1.3.{run}", "notes": notes},
+                    open("version.json", "w"), ensure_ascii=False)
+          PY
+          cat version.json
       - uses: actions/upload-artifact@v4
         with:
           name: AutoClicker-apk
@@ -45,5 +58,7 @@ jobs:
           tag_name: latest
           name: AutoClicker (bản mới nhất)
           body: Bản build tự động từ nhánh main (${{ github.sha }}). Tải AutoClicker.apk về điện thoại Android và cài đặt.
-          files: android/AutoClicker.apk
+          files: |
+            android/AutoClicker.apk
+            android/version.json
           make_latest: true

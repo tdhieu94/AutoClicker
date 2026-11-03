@@ -11,8 +11,11 @@ android {
         applicationId = "com.hieu.autoclicker"
         minSdk = 24
         targetSdk = 34
-        versionCode = 3
-        versionName = "1.2"
+        // Trên GitHub Actions, mỗi lần build có số thứ tự tăng dần (GITHUB_RUN_NUMBER),
+        // dùng làm versionCode để app biết khi nào có bản mới hơn.
+        val runNumber = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull()
+        versionCode = if (runNumber != null) 100 + runNumber else 3
+        versionName = if (runNumber != null) "1.3.$runNumber" else "1.3-dev"
     }
 
     // Khoá ký cố định lấy từ GitHub Secrets (CI giải mã ra file và truyền qua biến môi trường),
@@ -43,4 +46,5 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
+    buildFeatures { buildConfig = true }
 }
