@@ -69,9 +69,12 @@ class MainActivity : Activity() {
             setPadding(0, dp(24), 0, 0)
             text = """
                 Cách dùng:
-                • ＋ thêm một điểm chạm (vòng tròn có số). Kéo vòng tròn tới vị trí cần chạm.
+                • ＋ thêm một điểm chạm (vòng tròn xanh dương có số). Kéo tới vị trí cần chạm.
+                • ↗ thêm một thao tác vuốt: kéo vòng xanh lá (điểm đầu) và vòng đỏ (điểm cuối).
                 • － xoá điểm cuối cùng.
                 • ⚙ chỉnh khoảng cách, số vòng… ngay trên màn hình (giữ ＋/－ để thay đổi nhanh).
+                • 💾 lưu các điểm + thông số thành kịch bản, chạm tên kịch bản để tải lại.
+                • Số nhỏ dưới nút ▶ là số thao tác đã thực hiện. Có thể hẹn giờ tự dừng trong ⚙.
                 • ▶ bắt đầu chạm lần lượt theo thứ tự 1, 2, 3…; ■ để dừng.
                 • ✕ ẩn bảng điều khiển.
                 • Kéo nút ≡ để di chuyển bảng điều khiển.

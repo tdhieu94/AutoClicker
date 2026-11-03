@@ -26,6 +26,16 @@ class Settings(context: Context) {
         get() = prefs.getInt("jitter", 0)
         set(v) = prefs.edit().putInt("jitter", v.coerceIn(0, 100)).apply()
 
+    /** Thời gian thực hiện một lần vuốt (ms). */
+    var swipeMs: Long
+        get() = prefs.getLong("swipe", 300L)
+        set(v) = prefs.edit().putLong("swipe", v.coerceIn(50L, 5_000L)).apply()
+
+    /** Tự dừng sau số phút này. 0 = không hẹn giờ. */
+    var stopAfterMin: Int
+        get() = prefs.getInt("stop_after", 0)
+        set(v) = prefs.edit().putInt("stop_after", v.coerceIn(0, 24 * 60)).apply()
+
     companion object {
         const val MIN_INTERVAL_MS = 10L
     }

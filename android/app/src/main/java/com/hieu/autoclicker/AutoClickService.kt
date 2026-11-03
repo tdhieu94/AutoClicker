@@ -9,42 +9,55 @@ import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.view.Gravity
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.widget.LinearLayout
+import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
 import kotlin.random.Random
 
 /**
- * Dịch vụ Trợ năng: hiển thị bảng điều khiển nổi + các điểm chạm,
- * và dùng dispatchGesture() để chạm vào màn hình (hoạt động trên mọi ứng dụng).
+ * Dịch vụ Trợ năng: hiển thị bảng điều khiển nổi + các điểm chạm/vuốt,
+ * và dùng dispatchGesture() để thao tác trên màn hình (hoạt động trên mọi ứng dụng).
  * Cửa sổ dùng TYPE_ACCESSIBILITY_OVERLAY nên không cần quyền "Hiển thị trên ứng dụng khác".
  */
 class AutoClickService : AccessibilityService() {
 
+    /** Một bước: chạm tại [start], hoặc vuốt từ [start] tới [end]. */
+    private class Step(val start: View, val end: View?) {
+        val isSwipe get() = end != null
+        val views get() = listOfNotNull(start, end)
+    }
+
     private lateinit var wm: WindowManager
     private lateinit var settings: Settings
+    private lateinit var profiles: Profiles
     private val handler = Handler(Looper.getMainLooper())
 
     private var panel: LinearLayout? = null
     private var panelParams: WindowManager.LayoutParams? = null
-    private var settingsPanel: View? = null
     private var playButton: TextView? = null
-    private val targets = mutableListOf<View>()
+    private var counterView: TextView? = null
+    private var popup: View? = null          // bảng ⚙ hoặc 💾 đang mở (chỉ một cái một lúc)
+    private val steps = mutableListOf<Step>()
 
     private var running = false
     private var stepIndex = 0
     private var cyclesDone = 0
+    private var actionsDone = 0L
+    private var startedAt = 0L
 
     override fun onServiceConnected() {
         super.onServiceConnected()
         instance = this
         wm = getSystemService(WINDOW_SERVICE) as WindowManager
         settings = Settings(this)
+        profiles = Profiles(this)
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {}
@@ -57,123 +70,379 @@ class AutoClickService : AccessibilityService() {
         super.onDestroy()
     }
 
-    // ---------- Overlay ----------
+    // ---------- Bảng điều khiển ----------
 
     fun showOverlay() {
         if (panel != null) return
         val p = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            background = GradientDrawable().apply {
-                setColor(Color.parseColor("#E6212121"))
-                cornerRadius = dp(16).toFloat()
-            }
+            gravity = Gravity.CENTER_HORIZONTAL
+            background = roundedBg("#E6212121", 16)
             setPadding(dp(4), dp(4), dp(4), dp(4))
         }
-        val lp = overlayParams(dp(56), WindowManager.LayoutParams.WRAP_CONTENT).apply {
-            x = 0; y = dp(200)
-        }
+        val lp = overlayParams(dp(56), WindowManager.LayoutParams.WRAP_CONTENT).apply { x = 0; y = dp(160) }
         val handle = panelButton("≡")
         p.addView(handle)
         playButton = panelButton("▶") { if (running) stop() else start() }
         p.addView(playButton)
-        p.addView(panelButton("＋") { addTarget() })
-        p.addView(panelButton("－") { removeLastTarget() })
-        p.addView(panelButton("⚙") { toggleSettings() })
+        counterView = TextView(this).apply {
+            textSize = 10f
+            gravity = Gravity.CENTER
+            setTextColor(Color.parseColor("#90CAF9"))
+            visibility = View.GONE
+        }
+        p.addView(counterView)
+        p.addView(panelButton("＋") { addTap() })
+        p.addView(panelButton("↗") { addSwipe() })
+        p.addView(panelButton("－") { removeLastStep() })
+        p.addView(panelButton("💾") { togglePopup("profiles", ::buildProfilesPopup) })
+        p.addView(panelButton("⚙") { togglePopup("settings", ::buildSettingsPopup) })
         p.addView(panelButton("✕") { hideOverlay() })
         makeDraggable(handle, p, lp)
         wm.addView(p, lp)
         panel = p
         panelParams = lp
-        if (targets.isEmpty()) addTarget()
+        if (steps.isEmpty()) addTap()
     }
 
     fun hideOverlay() {
         stop()
-        closeSettings()
-        targets.forEach { runCatching { wm.removeView(it) } }
-        targets.clear()
+        closePopup()
+        clearSteps()
         panel?.let { runCatching { wm.removeView(it) } }
         panel = null
         panelParams = null
         playButton = null
+        counterView = null
     }
 
-    // ---------- Bảng cài đặt nổi ----------
+    // ---------- Các bước ----------
 
-    private fun toggleSettings() {
-        if (settingsPanel != null) closeSettings() else openSettings()
+    private fun addTap(x: Int? = null, y: Int? = null) {
+        if (running) return
+        val n = steps.size + 1
+        val (dx, dy) = defaultPos(n)
+        steps.add(Step(addMarker("$n", "#801E88E5", x ?: dx, y ?: dy), null))
     }
 
-    private fun closeSettings() {
-        settingsPanel?.let { runCatching { wm.removeView(it) } }
-        settingsPanel = null
+    private fun addSwipe(x: Int? = null, y: Int? = null, x2: Int? = null, y2: Int? = null) {
+        if (running) return
+        val n = steps.size + 1
+        val (dx, dy) = defaultPos(n)
+        val start = addMarker("$n", "#8043A047", x ?: dx, y ?: dy)
+        val end = addMarker("$n↗", "#80E53935", x2 ?: dx, y2 ?: (dy - dp(150)))
+        steps.add(Step(start, end))
     }
 
-    private fun openSettings() {
-        val box = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            background = GradientDrawable().apply {
-                setColor(Color.parseColor("#F2212121"))
-                cornerRadius = dp(16).toFloat()
-            }
-            setPadding(dp(12), dp(8), dp(12), dp(8))
-        }
-        val lp = overlayParams(WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT)
+    private fun defaultPos(n: Int): Pair<Int, Int> {
+        val dm = resources.displayMetrics
+        val size = dp(TARGET_DP)
+        return Pair(dm.widthPixels / 2 - size / 2 + (n - 1) * dp(12), dm.heightPixels / 2 - size / 2 + (n - 1) * dp(12))
+    }
 
-        val title = TextView(this).apply {
-            text = "≡  Cài đặt"
-            textSize = 16f
-            setTextColor(Color.WHITE)
-            setPadding(0, dp(4), 0, dp(8))
-        }
-        box.addView(title)
-        makeDraggable(title, box, lp)
-
-        box.addView(stepperRow(
-            "Khoảng cách (ms)",
-            get = { settings.intervalMs },
-            set = { settings.intervalMs = it },
-            format = { "$it" },
-            step = { v -> when { v < 100 -> 10L; v < 1_000 -> 50L; v < 10_000 -> 500L; else -> 5_000L } },
-        ))
-        box.addView(stepperRow(
-            "Số vòng",
-            get = { settings.repeatCount.toLong() },
-            set = { settings.repeatCount = it.toInt() },
-            format = { if (it == 0L) "∞" else "$it" },
-            step = { v -> when { v < 10 -> 1L; v < 100 -> 5L; else -> 50L } },
-        ))
-        box.addView(stepperRow(
-            "Giữ mỗi lần chạm (ms)",
-            get = { settings.pressMs },
-            set = { settings.pressMs = it },
-            format = { "$it" },
-            step = { v -> when { v < 100 -> 10L; v < 1_000 -> 50L; else -> 250L } },
-        ))
-        box.addView(stepperRow(
-            "Lệch ngẫu nhiên (px)",
-            get = { settings.jitterPx.toLong() },
-            set = { settings.jitterPx = it.toInt() },
-            format = { if (it == 0L) "Tắt" else "$it" },
-            step = { 2L },
-        ))
-        box.addView(TextView(this).apply {
-            text = "Xong"
+    private fun addMarker(label: String, color: String, x: Int, y: Int): View {
+        val size = dp(TARGET_DP)
+        val v = TextView(this).apply {
+            text = label
             gravity = Gravity.CENTER
-            textSize = 16f
-            setTextColor(Color.parseColor("#90CAF9"))
-            setPadding(0, dp(10), 0, dp(6))
-            setOnClickListener { closeSettings() }
-        })
+            setTextColor(Color.WHITE)
+            textSize = 13f
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(Color.parseColor(color))
+                setStroke(dp(2), Color.WHITE)
+            }
+        }
+        val lp = overlayParams(size, size).apply { this.x = x; this.y = y }
+        makeDraggable(v, v, lp)
+        wm.addView(v, lp)
+        return v
+    }
 
-        // Đặt bảng cài đặt cạnh bảng điều khiển, lật sang trái nếu sát mép phải.
+    private fun removeLastStep() {
+        if (running || steps.isEmpty()) return
+        steps.removeAt(steps.lastIndex).views.forEach { runCatching { wm.removeView(it) } }
+    }
+
+    private fun clearSteps() {
+        steps.forEach { s -> s.views.forEach { runCatching { wm.removeView(it) } } }
+        steps.clear()
+    }
+
+    private fun pos(v: View): Pair<Int, Int> = (v.layoutParams as WindowManager.LayoutParams).let { it.x to it.y }
+
+    /** Khi đang chạy, các điểm phải "trong suốt" với chạm để cử chỉ rơi xuống ứng dụng bên dưới. */
+    private fun setMarkersTouchable(touchable: Boolean) {
+        steps.flatMap { it.views }.forEach { v ->
+            val lp = v.layoutParams as WindowManager.LayoutParams
+            lp.flags = if (touchable) lp.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
+            else lp.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+            v.alpha = if (touchable) 1f else 0.5f
+            wm.updateViewLayout(v, lp)
+        }
+    }
+
+    // ---------- Vòng lặp thao tác ----------
+
+    private fun start() {
+        if (steps.isEmpty()) {
+            toast("Hãy thêm ít nhất một điểm (＋ hoặc ↗)")
+            return
+        }
+        closePopup()
+        running = true
+        stepIndex = 0
+        cyclesDone = 0
+        actionsDone = 0
+        startedAt = SystemClock.elapsedRealtime()
+        playButton?.text = "■"
+        counterView?.apply { text = "0"; visibility = View.VISIBLE }
+        setMarkersTouchable(false)
+        // Chờ một nhịp để hệ thống áp dụng FLAG_NOT_TOUCHABLE trước khi chạm.
+        handler.postDelayed(::tick, 100)
+    }
+
+    fun stop() {
+        if (!running) return
+        running = false
+        handler.removeCallbacksAndMessages(null)
+        playButton?.text = "▶"
+        setMarkersTouchable(true)
+    }
+
+    private fun center(v: View): Pair<Float, Float> {
+        val loc = IntArray(2)
+        v.getLocationOnScreen(loc)
+        val j = settings.jitterPx
+        fun r() = if (j > 0) Random.nextInt(-j, j + 1) else 0
+        return Pair(
+            (loc[0] + v.width / 2f + r()).coerceAtLeast(0f),
+            (loc[1] + v.height / 2f + r()).coerceAtLeast(0f),
+        )
+    }
+
+    private fun tick() {
+        if (!running) return
+        val step = steps.getOrNull(stepIndex) ?: return stop()
+        val (x, y) = center(step.start)
+        val path = Path().apply { moveTo(x, y) }
+        val duration = if (step.end != null) {
+            val (x2, y2) = center(step.end)
+            path.lineTo(x2, y2)
+            settings.swipeMs
+        } else settings.pressMs
+
+        val gesture = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(path, 0, duration))
+            .build()
+        val ok = dispatchGesture(gesture, object : GestureResultCallback() {
+            override fun onCompleted(g: GestureDescription?) = scheduleNext()
+            override fun onCancelled(g: GestureDescription?) = scheduleNext()
+        }, null)
+        if (!ok) {
+            toast("Không thể gửi thao tác chạm")
+            stop()
+        }
+    }
+
+    private fun scheduleNext() {
+        if (!running) return
+        actionsDone++
+        counterView?.text = actionsDone.toString()
+
+        val stopMin = settings.stopAfterMin
+        if (stopMin > 0 && SystemClock.elapsedRealtime() - startedAt >= stopMin * 60_000L) {
+            stop()
+            toast("Đã chạy đủ $stopMin phút")
+            return
+        }
+        stepIndex++
+        if (stepIndex >= steps.size) {
+            stepIndex = 0
+            cyclesDone++
+            val limit = settings.repeatCount
+            if (limit > 0 && cyclesDone >= limit) {
+                stop()
+                toast("Đã hoàn thành $limit vòng")
+                return
+            }
+        }
+        handler.postDelayed(::tick, settings.intervalMs)
+    }
+
+    // ---------- Bảng nổi phụ (⚙ cài đặt, 💾 kịch bản) ----------
+
+    private fun togglePopup(key: String, build: () -> View) {
+        val wasOpen = popup?.tag
+        closePopup()
+        if (wasOpen != key) showPopup(build().apply { tag = key })
+    }
+
+    private fun closePopup() {
+        popup?.let { runCatching { wm.removeView(it) } }
+        popup = null
+    }
+
+    private fun showPopup(content: View, atX: Int? = null, atY: Int? = null) {
+        val lp = overlayParams(WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT)
+        // Kéo tiêu đề (con đầu tiên) để di chuyển bảng.
+        (content as? LinearLayout)?.getChildAt(0)?.let { makeDraggable(it, content, lp) }
+        // Đặt cạnh bảng điều khiển, lật sang trái nếu sát mép phải.
         val pp = panelParams
         val screenW = resources.displayMetrics.widthPixels
         val panelX = pp?.x ?: 0
         lp.x = if (panelX + dp(56) + dp(280) <= screenW) panelX + dp(60) else (panelX - dp(284)).coerceAtLeast(0)
-        lp.y = pp?.y ?: dp(200)
-        wm.addView(box, lp)
-        settingsPanel = box
+        lp.y = pp?.y ?: dp(160)
+        atX?.let { lp.x = it }
+        atY?.let { lp.y = it }
+        wm.addView(content, lp)
+        popup = content
+    }
+
+    private fun popupBox(title: String) = LinearLayout(this).apply {
+        orientation = LinearLayout.VERTICAL
+        background = roundedBg("#F2212121", 16)
+        setPadding(dp(12), dp(8), dp(12), dp(8))
+        addView(TextView(context).apply {
+            text = "≡  $title"
+            textSize = 16f
+            setTextColor(Color.WHITE)
+            setPadding(0, dp(4), 0, dp(8))
+        })
+    }
+
+    private fun closeLink(box: LinearLayout) = box.addView(TextView(this).apply {
+        text = "Xong"
+        gravity = Gravity.CENTER
+        textSize = 16f
+        setTextColor(Color.parseColor("#90CAF9"))
+        setPadding(0, dp(10), 0, dp(6))
+        setOnClickListener { closePopup() }
+    })
+
+    private fun buildSettingsPopup(): View {
+        val box = popupBox("Cài đặt")
+        val inner = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        inner.addView(stepperRow("Khoảng cách (ms)", { settings.intervalMs }, { settings.intervalMs = it }, { "$it" },
+            { v -> when { v < 100 -> 10L; v < 1_000 -> 50L; v < 10_000 -> 500L; else -> 5_000L } }))
+        inner.addView(stepperRow("Số vòng", { settings.repeatCount.toLong() }, { settings.repeatCount = it.toInt() },
+            { if (it == 0L) "∞" else "$it" }, { v -> when { v < 10 -> 1L; v < 100 -> 5L; else -> 50L } }))
+        inner.addView(stepperRow("Tự dừng sau (phút)", { settings.stopAfterMin.toLong() }, { settings.stopAfterMin = it.toInt() },
+            { if (it == 0L) "Tắt" else "$it" }, { v -> when { v < 10 -> 1L; v < 60 -> 5L; else -> 30L } }))
+        inner.addView(stepperRow("Giữ mỗi lần chạm (ms)", { settings.pressMs }, { settings.pressMs = it }, { "$it" },
+            { v -> when { v < 100 -> 10L; v < 1_000 -> 50L; else -> 250L } }))
+        inner.addView(stepperRow("Thời gian vuốt (ms)", { settings.swipeMs }, { settings.swipeMs = it }, { "$it" },
+            { v -> when { v < 1_000 -> 50L; else -> 250L } }))
+        inner.addView(stepperRow("Lệch ngẫu nhiên (px)", { settings.jitterPx.toLong() }, { settings.jitterPx = it.toInt() },
+            { if (it == 0L) "Tắt" else "$it" }, { 2L }))
+        box.addView(ScrollView(this).apply {
+            addView(inner)
+            layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, maxPopupHeight())
+        })
+        closeLink(box)
+        return box
+    }
+
+    private fun buildProfilesPopup(): View {
+        val box = popupBox("Kịch bản")
+        box.addView(actionRow("＋ Lưu cấu hình hiện tại", "#90CAF9") {
+            if (steps.isEmpty()) return@actionRow toast("Chưa có điểm nào để lưu")
+            val name = profiles.nextName()
+            profiles.add(currentProfile(name))
+            toast("Đã lưu \"$name\"")
+            refreshPopup("profiles", ::buildProfilesPopup)
+        })
+        val list = profiles.all()
+        val inner = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        if (list.isEmpty()) {
+            inner.addView(TextView(this).apply {
+                text = "Chưa có kịch bản nào.\nĐặt điểm xong bấm \"Lưu\" ở trên."
+                textSize = 13f
+                setTextColor(Color.parseColor("#BDBDBD"))
+                setPadding(0, dp(8), 0, dp(8))
+            })
+        }
+        list.forEachIndexed { i, p ->
+            val taps = p.steps.count { !it.swipe }
+            val swipes = p.steps.size - taps
+            val row = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+            }
+            row.addView(TextView(this).apply {
+                text = "${p.name}\n$taps chạm · $swipes vuốt · ${p.intervalMs} ms"
+                textSize = 14f
+                setTextColor(Color.WHITE)
+                setPadding(dp(4), dp(8), dp(4), dp(8))
+                layoutParams = LinearLayout.LayoutParams(dp(200), LinearLayout.LayoutParams.WRAP_CONTENT)
+                setOnClickListener {
+                    loadProfile(p)
+                    toast("Đã tải \"${p.name}\"")
+                    closePopup()
+                }
+            })
+            row.addView(TextView(this).apply {
+                text = "🗑"
+                textSize = 18f
+                gravity = Gravity.CENTER
+                layoutParams = LinearLayout.LayoutParams(dp(44), dp(44))
+                setOnClickListener {
+                    profiles.remove(i)
+                    refreshPopup("profiles", ::buildProfilesPopup)
+                }
+            })
+            inner.addView(row)
+        }
+        box.addView(ScrollView(this).apply {
+            addView(inner)
+            if (list.size > 4) layoutParams = LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, maxPopupHeight())
+        })
+        closeLink(box)
+        return box
+    }
+
+    /** Dựng lại bảng đang mở tại đúng vị trí cũ (sau khi thêm/xoá kịch bản). */
+    private fun refreshPopup(key: String, build: () -> View) {
+        val lp = popup?.layoutParams as? WindowManager.LayoutParams
+        closePopup()
+        showPopup(build().apply { tag = key }, lp?.x, lp?.y)
+    }
+
+    private fun currentProfile(name: String) = Profile(
+        name = name,
+        steps = steps.map { s ->
+            val (x, y) = pos(s.start)
+            val (x2, y2) = s.end?.let(::pos) ?: (0 to 0)
+            StepData(s.isSwipe, x, y, x2, y2)
+        },
+        intervalMs = settings.intervalMs,
+        repeatCount = settings.repeatCount,
+        pressMs = settings.pressMs,
+        jitterPx = settings.jitterPx,
+        swipeMs = settings.swipeMs,
+        stopAfterMin = settings.stopAfterMin,
+    )
+
+    private fun loadProfile(p: Profile) {
+        stop()
+        clearSteps()
+        p.steps.forEach { s -> if (s.swipe) addSwipe(s.x, s.y, s.x2, s.y2) else addTap(s.x, s.y) }
+        settings.intervalMs = p.intervalMs
+        settings.repeatCount = p.repeatCount
+        settings.pressMs = p.pressMs
+        settings.jitterPx = p.jitterPx
+        settings.swipeMs = p.swipeMs
+        settings.stopAfterMin = p.stopAfterMin
+    }
+
+    private fun maxPopupHeight() = (resources.displayMetrics.heightPixels * 0.55).toInt()
+
+    private fun actionRow(label: String, color: String, onClick: () -> Unit) = TextView(this).apply {
+        text = label
+        textSize = 15f
+        setTextColor(Color.parseColor(color))
+        setPadding(dp(4), dp(8), dp(4), dp(8))
+        setOnClickListener { onClick() }
     }
 
     /** Một dòng: nhãn ở trên, [−] giá trị [+] ở dưới. Giữ nút để tăng/giảm liên tục. */
@@ -224,10 +493,7 @@ class AutoClickService : AccessibilityService() {
         gravity = Gravity.CENTER
         textSize = 20f
         setTextColor(Color.WHITE)
-        background = GradientDrawable().apply {
-            setColor(Color.parseColor("#424242"))
-            cornerRadius = dp(10).toFloat()
-        }
+        background = roundedBg("#424242", 10)
         layoutParams = LinearLayout.LayoutParams(dp(56), dp(44))
         val repeater = object : Runnable {
             var delay = 400L
@@ -254,111 +520,6 @@ class AutoClickService : AccessibilityService() {
         }
     }
 
-    private fun addTarget() {
-        if (running) return
-        val size = dp(TARGET_DP)
-        val number = targets.size + 1
-        val v = TextView(this).apply {
-            text = number.toString()
-            gravity = Gravity.CENTER
-            setTextColor(Color.WHITE)
-            textSize = 14f
-            background = GradientDrawable().apply {
-                shape = GradientDrawable.OVAL
-                setColor(Color.parseColor("#801E88E5"))
-                setStroke(dp(2), Color.WHITE)
-            }
-        }
-        val dm = resources.displayMetrics
-        val lp = overlayParams(size, size).apply {
-            x = dm.widthPixels / 2 - size / 2 + (number - 1) * dp(12)
-            y = dm.heightPixels / 2 - size / 2 + (number - 1) * dp(12)
-        }
-        makeDraggable(v, v, lp)
-        wm.addView(v, lp)
-        targets.add(v)
-    }
-
-    private fun removeLastTarget() {
-        if (running || targets.isEmpty()) return
-        runCatching { wm.removeView(targets.removeAt(targets.lastIndex)) }
-    }
-
-    /** Khi đang chạy, các điểm phải "trong suốt" với chạm để cử chỉ rơi xuống ứng dụng bên dưới. */
-    private fun setTargetsTouchable(touchable: Boolean) {
-        targets.forEach { v ->
-            val lp = v.layoutParams as WindowManager.LayoutParams
-            lp.flags = if (touchable) lp.flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()
-            else lp.flags or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-            v.alpha = if (touchable) 1f else 0.5f
-            wm.updateViewLayout(v, lp)
-        }
-    }
-
-    // ---------- Click loop ----------
-
-    private fun start() {
-        if (targets.isEmpty()) {
-            toast("Hãy thêm ít nhất một điểm (＋)")
-            return
-        }
-        running = true
-        stepIndex = 0
-        cyclesDone = 0
-        playButton?.text = "■"
-        setTargetsTouchable(false)
-        // Chờ một nhịp để hệ thống áp dụng FLAG_NOT_TOUCHABLE trước khi chạm.
-        handler.postDelayed(::tick, 100)
-    }
-
-    fun stop() {
-        if (!running) return
-        running = false
-        handler.removeCallbacksAndMessages(null)
-        playButton?.text = "▶"
-        setTargetsTouchable(true)
-    }
-
-    private fun tick() {
-        if (!running) return
-        val target = targets.getOrNull(stepIndex) ?: return stop()
-        val loc = IntArray(2)
-        target.getLocationOnScreen(loc)
-        val j = settings.jitterPx
-        val x = loc[0] + target.width / 2f + if (j > 0) Random.nextInt(-j, j + 1) else 0
-        val y = loc[1] + target.height / 2f + if (j > 0) Random.nextInt(-j, j + 1) else 0
-
-        val path = Path().apply { moveTo(x.coerceAtLeast(0f), y.coerceAtLeast(0f)) }
-        val gesture = GestureDescription.Builder()
-            .addStroke(GestureDescription.StrokeDescription(path, 0, settings.pressMs))
-            .build()
-
-        val ok = dispatchGesture(gesture, object : GestureResultCallback() {
-            override fun onCompleted(g: GestureDescription?) = scheduleNext()
-            override fun onCancelled(g: GestureDescription?) = scheduleNext()
-        }, null)
-        if (!ok) {
-            toast("Không thể gửi thao tác chạm")
-            stop()
-        }
-    }
-
-    private fun scheduleNext() {
-        if (!running) return
-        stepIndex++
-        if (stepIndex >= targets.size) {
-            stepIndex = 0
-            cyclesDone++
-            val limit = settings.repeatCount
-            if (limit > 0 && cyclesDone >= limit) {
-                stop()
-                toast("Đã hoàn thành $limit vòng")
-                return
-            }
-        }
-        handler.postDelayed(::tick, settings.intervalMs)
-    }
-
     // ---------- Helpers ----------
 
     private fun overlayParams(w: Int, h: Int) = WindowManager.LayoutParams(
@@ -370,16 +531,21 @@ class AutoClickService : AccessibilityService() {
         PixelFormat.TRANSLUCENT
     ).apply { gravity = Gravity.TOP or Gravity.START }
 
+    private fun roundedBg(color: String, radiusDp: Int) = GradientDrawable().apply {
+        setColor(Color.parseColor(color))
+        cornerRadius = dp(radiusDp).toFloat()
+    }
+
     private fun panelButton(label: String, onClick: (() -> Unit)? = null) = TextView(this).apply {
         text = label
         gravity = Gravity.CENTER
         textSize = 20f
         setTextColor(Color.WHITE)
-        layoutParams = LinearLayout.LayoutParams(dp(48), dp(48))
+        layoutParams = LinearLayout.LayoutParams(dp(48), dp(46))
         onClick?.let { cb -> setOnClickListener { cb() } }
     }
 
-    /** Kéo [handle] để di chuyển cửa sổ [window]; chạm nhẹ vẫn được tính là click. */
+    /** Kéo [handle] để di chuyển cửa sổ [window]. */
     @SuppressLint("ClickableViewAccessibility")
     private fun makeDraggable(handle: View, window: View, lp: WindowManager.LayoutParams) {
         var startX = 0; var startY = 0; var touchX = 0f; var touchY = 0f
