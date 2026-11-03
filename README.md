@@ -9,7 +9,7 @@ Không cần root, không cần quyền "Hiển thị trên ứng dụng khác" 
 - Nhiều điểm chạm, chạm lần lượt theo thứ tự 1 → 2 → 3…; kéo thả để đặt vị trí.
 - Chỉnh khoảng cách giữa các lần chạm (tối thiểu 10 ms), thời gian giữ, số vòng lặp (0 = chạy mãi).
 - Lệch ngẫu nhiên quanh điểm (px) để chạm tự nhiên hơn.
-- Bảng điều khiển nổi: ≡ kéo, ▶/■ chạy/dừng, ＋ thêm điểm, － xoá điểm, ✕ ẩn.
+- Bảng điều khiển nổi: ≡ kéo, ▶/■ chạy/dừng, ＋ thêm điểm, － xoá điểm, ⚙ chỉnh thông số ngay tại chỗ, ✕ ẩn.
 - Android 7.0 (API 24) trở lên.
 
 **Cài đặt trên điện thoại**

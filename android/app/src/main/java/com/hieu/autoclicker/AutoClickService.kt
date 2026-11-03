@@ -31,6 +31,8 @@ class AutoClickService : AccessibilityService() {
     private val handler = Handler(Looper.getMainLooper())
 
     private var panel: LinearLayout? = null
+    private var panelParams: WindowManager.LayoutParams? = null
+    private var settingsPanel: View? = null
     private var playButton: TextView? = null
     private val targets = mutableListOf<View>()
 
@@ -76,20 +78,180 @@ class AutoClickService : AccessibilityService() {
         p.addView(playButton)
         p.addView(panelButton("＋") { addTarget() })
         p.addView(panelButton("－") { removeLastTarget() })
+        p.addView(panelButton("⚙") { toggleSettings() })
         p.addView(panelButton("✕") { hideOverlay() })
         makeDraggable(handle, p, lp)
         wm.addView(p, lp)
         panel = p
+        panelParams = lp
         if (targets.isEmpty()) addTarget()
     }
 
     fun hideOverlay() {
         stop()
+        closeSettings()
         targets.forEach { runCatching { wm.removeView(it) } }
         targets.clear()
         panel?.let { runCatching { wm.removeView(it) } }
         panel = null
+        panelParams = null
         playButton = null
+    }
+
+    // ---------- Bảng cài đặt nổi ----------
+
+    private fun toggleSettings() {
+        if (settingsPanel != null) closeSettings() else openSettings()
+    }
+
+    private fun closeSettings() {
+        settingsPanel?.let { runCatching { wm.removeView(it) } }
+        settingsPanel = null
+    }
+
+    private fun openSettings() {
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            background = GradientDrawable().apply {
+                setColor(Color.parseColor("#F2212121"))
+                cornerRadius = dp(16).toFloat()
+            }
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+        }
+        val lp = overlayParams(WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT)
+
+        val title = TextView(this).apply {
+            text = "≡  Cài đặt"
+            textSize = 16f
+            setTextColor(Color.WHITE)
+            setPadding(0, dp(4), 0, dp(8))
+        }
+        box.addView(title)
+        makeDraggable(title, box, lp)
+
+        box.addView(stepperRow(
+            "Khoảng cách (ms)",
+            get = { settings.intervalMs },
+            set = { settings.intervalMs = it },
+            format = { "$it" },
+            step = { v -> when { v < 100 -> 10L; v < 1_000 -> 50L; v < 10_000 -> 500L; else -> 5_000L } },
+        ))
+        box.addView(stepperRow(
+            "Số vòng",
+            get = { settings.repeatCount.toLong() },
+            set = { settings.repeatCount = it.toInt() },
+            format = { if (it == 0L) "∞" else "$it" },
+            step = { v -> when { v < 10 -> 1L; v < 100 -> 5L; else -> 50L } },
+        ))
+        box.addView(stepperRow(
+            "Giữ mỗi lần chạm (ms)",
+            get = { settings.pressMs },
+            set = { settings.pressMs = it },
+            format = { "$it" },
+            step = { v -> when { v < 100 -> 10L; v < 1_000 -> 50L; else -> 250L } },
+        ))
+        box.addView(stepperRow(
+            "Lệch ngẫu nhiên (px)",
+            get = { settings.jitterPx.toLong() },
+            set = { settings.jitterPx = it.toInt() },
+            format = { if (it == 0L) "Tắt" else "$it" },
+            step = { 2L },
+        ))
+        box.addView(TextView(this).apply {
+            text = "Xong"
+            gravity = Gravity.CENTER
+            textSize = 16f
+            setTextColor(Color.parseColor("#90CAF9"))
+            setPadding(0, dp(10), 0, dp(6))
+            setOnClickListener { closeSettings() }
+        })
+
+        // Đặt bảng cài đặt cạnh bảng điều khiển, lật sang trái nếu sát mép phải.
+        val pp = panelParams
+        val screenW = resources.displayMetrics.widthPixels
+        val panelX = pp?.x ?: 0
+        lp.x = if (panelX + dp(56) + dp(280) <= screenW) panelX + dp(60) else (panelX - dp(284)).coerceAtLeast(0)
+        lp.y = pp?.y ?: dp(200)
+        wm.addView(box, lp)
+        settingsPanel = box
+    }
+
+    /** Một dòng: nhãn ở trên, [−] giá trị [+] ở dưới. Giữ nút để tăng/giảm liên tục. */
+    private fun stepperRow(
+        label: String,
+        get: () -> Long,
+        set: (Long) -> Unit,
+        format: (Long) -> String,
+        step: (Long) -> Long,
+    ): View {
+        val row = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(0, dp(4), 0, dp(4))
+        }
+        row.addView(TextView(this).apply {
+            text = label
+            textSize = 13f
+            setTextColor(Color.parseColor("#BDBDBD"))
+        })
+        val line = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        val value = TextView(this).apply {
+            text = format(get())
+            gravity = Gravity.CENTER
+            textSize = 18f
+            setTextColor(Color.WHITE)
+            layoutParams = LinearLayout.LayoutParams(dp(110), dp(44))
+        }
+        fun change(sign: Int) {
+            val cur = get()
+            // Khi giảm, dùng bước của mức thấp hơn để không nhảy quá xa.
+            val s = if (sign > 0) step(cur) else step((cur - 1).coerceAtLeast(0))
+            set((cur + sign * s).coerceAtLeast(0))
+            value.text = format(get())
+        }
+        line.addView(stepButton("－") { change(-1) })
+        line.addView(value)
+        line.addView(stepButton("＋") { change(+1) })
+        row.addView(line)
+        return row
+    }
+
+    @SuppressLint("ClickableViewAccessibility")
+    private fun stepButton(label: String, action: () -> Unit) = TextView(this).apply {
+        text = label
+        gravity = Gravity.CENTER
+        textSize = 20f
+        setTextColor(Color.WHITE)
+        background = GradientDrawable().apply {
+            setColor(Color.parseColor("#424242"))
+            cornerRadius = dp(10).toFloat()
+        }
+        layoutParams = LinearLayout.LayoutParams(dp(56), dp(44))
+        val repeater = object : Runnable {
+            var delay = 400L
+            override fun run() {
+                action()
+                delay = (delay * 0.8).toLong().coerceAtLeast(50L)
+                handler.postDelayed(this, delay)
+            }
+        }
+        setOnTouchListener { v, e ->
+            when (e.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    v.alpha = 0.6f
+                    action()
+                    repeater.delay = 400L
+                    handler.postDelayed(repeater, 400L)
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    v.alpha = 1f
+                    handler.removeCallbacks(repeater)
+                }
+            }
+            true
+        }
     }
 
     private fun addTarget() {
