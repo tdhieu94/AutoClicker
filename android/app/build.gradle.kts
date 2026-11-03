@@ -11,8 +11,8 @@ android {
         applicationId = "com.hieu.autoclicker"
         minSdk = 24
         targetSdk = 34
-        versionCode = 2
-        versionName = "1.1"
+        versionCode = 3
+        versionName = "1.2"
     }
 
     // Khoá ký cố định lấy từ GitHub Secrets (CI giải mã ra file và truyền qua biến môi trường),
