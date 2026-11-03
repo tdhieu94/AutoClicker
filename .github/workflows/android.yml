@@ -4,6 +4,9 @@ on:
   push:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -17,7 +20,18 @@ jobs:
           distribution: temurin
           java-version: 17
       - run: chmod +x gradlew && ./gradlew assembleRelease --no-daemon
+      - run: cp app/build/outputs/apk/release/app-release.apk AutoClicker.apk
       - uses: actions/upload-artifact@v4
         with:
           name: AutoClicker-apk
-          path: android/app/build/outputs/apk/release/*.apk
+          path: android/AutoClicker.apk
+      # Bản mới nhất từ nhánh main: tải trực tiếp trên điện thoại ở trang Releases.
+      - name: Publish "latest" release
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: AutoClicker (bản mới nhất)
+          body: Bản build tự động từ nhánh main (${{ github.sha }}). Tải AutoClicker.apk về điện thoại Android và cài đặt.
+          files: android/AutoClicker.apk
+          make_latest: true
