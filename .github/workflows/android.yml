@@ -29,10 +29,12 @@ jobs:
           else
             echo "::warning::Chưa có secret ANDROID_KEYSTORE_BASE64, APK sẽ ký bằng debug key ngẫu nhiên."
           fi
-      - run: chmod +x gradlew && ./gradlew assembleRelease --no-daemon
+      - run: chmod +x gradlew && ./gradlew assembleGithubRelease bundlePlayRelease --no-daemon
         env:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-      - run: cp app/build/outputs/apk/release/app-release.apk AutoClicker.apk
+      - run: |
+          cp app/build/outputs/apk/github/release/app-github-release.apk AutoClicker.apk
+          cp app/build/outputs/bundle/playRelease/app-play-release.aab AutoClicker-play.aab
       # App đọc file này để biết có bản mới (xem UpdateChecker.kt).
       - name: Write version.json
         env:
@@ -48,8 +50,10 @@ jobs:
           cat version.json
       - uses: actions/upload-artifact@v4
         with:
-          name: AutoClicker-apk
-          path: android/AutoClicker.apk
+          name: AutoClicker
+          path: |
+            android/AutoClicker.apk
+            android/AutoClicker-play.aab
       # Bản mới nhất từ nhánh main: tải trực tiếp trên điện thoại ở trang Releases.
       - name: Publish "latest" release
         if: github.ref == 'refs/heads/main'
@@ -60,5 +64,6 @@ jobs:
           body: Bản build tự động từ nhánh main (${{ github.sha }}). Tải AutoClicker.apk về điện thoại Android và cài đặt.
           files: |
             android/AutoClicker.apk
+            android/AutoClicker-play.aab
             android/version.json
           make_latest: true

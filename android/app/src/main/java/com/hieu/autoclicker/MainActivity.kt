@@ -1,6 +1,7 @@
 package com.hieu.autoclicker
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.Intent
 import android.graphics.Color
 import android.os.Bundle
@@ -11,6 +12,7 @@ import android.view.ViewGroup.LayoutParams.MATCH_PARENT
 import android.view.ViewGroup.LayoutParams.WRAP_CONTENT
 import android.widget.Button
 import android.widget.EditText
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -47,23 +49,24 @@ class MainActivity : Activity() {
         press = field(root, "Thời gian giữ mỗi lần chạm (ms)", settings.pressMs.toString())
         jitter = field(root, "Lệch ngẫu nhiên quanh điểm (px, 0 = tắt)", settings.jitterPx.toString())
 
-        root.addView(button("1. Bật dịch vụ Trợ năng") {
-            startActivity(Intent(SysSettings.ACTION_ACCESSIBILITY_SETTINGS))
-            Toast.makeText(this, "Tìm \"AutoClicker\" trong danh sách và bật lên", Toast.LENGTH_LONG).show()
-        })
+        root.addView(button("1. Bật dịch vụ Trợ năng") { openAccessibilityWithDisclosure() })
         root.addView(button("2. Lưu & hiện bảng điều khiển nổi") {
             save()
             val svc = AutoClickService.instance
             if (svc == null) {
                 Toast.makeText(this, "Hãy bật dịch vụ Trợ năng trước", Toast.LENGTH_LONG).show()
             } else {
-                svc.showOverlay()
-                moveTaskToBack(true)
+                Flavor.beforeShowOverlay(this) {
+                    svc.showOverlay()
+                    moveTaskToBack(true)
+                }
             }
         })
-        root.addView(button("Kiểm tra cập nhật (đang dùng ${BuildConfig.VERSION_NAME})") {
-            UpdateChecker.check(this, manual = true)
-        })
+        if (Flavor.HAS_UPDATER) {
+            root.addView(button("Kiểm tra cập nhật (đang dùng ${BuildConfig.VERSION_NAME})") {
+                Flavor.checkForUpdates(this)
+            })
+        }
         root.addView(TextView(this).apply {
             textSize = 14f
             setPadding(0, dp(24), 0, 0)
@@ -81,8 +84,24 @@ class MainActivity : Activity() {
             """.trimIndent()
         })
 
-        setContentView(ScrollView(this).apply { addView(root) })
-        if (savedInstanceState == null) UpdateChecker.check(this, manual = false)
+        root.addView(TextView(this).apply {
+            textSize = 12f
+            setTextColor(Color.GRAY)
+            setPadding(0, dp(16), 0, 0)
+            text = "Phiên bản ${BuildConfig.VERSION_NAME}"
+        })
+
+        // Nội dung cuộn ở trên, vùng quảng cáo (chỉ bản CH Play) cố định ở dưới.
+        val adContainer = FrameLayout(this)
+        val screen = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            fitsSystemWindows = true
+            addView(ScrollView(this@MainActivity).apply { addView(root) },
+                LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
+            addView(adContainer, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
+        }
+        setContentView(screen)
+        Flavor.onCreate(this, adContainer, firstLaunch = savedInstanceState == null)
     }
 
     override fun onResume() {
@@ -100,6 +119,35 @@ class MainActivity : Activity() {
     override fun onPause() {
         super.onPause()
         save()
+    }
+
+    /**
+     * Chính sách Google Play: trước khi người dùng bật dịch vụ Trợ năng, phải giải thích rõ
+     * app dùng quyền này để làm gì và xin đồng ý.
+     */
+    private fun openAccessibilityWithDisclosure() {
+        val prefs = getSharedPreferences("consent", MODE_PRIVATE)
+        val open = {
+            startActivity(Intent(SysSettings.ACTION_ACCESSIBILITY_SETTINGS))
+            Toast.makeText(this, "Tìm \"AutoClicker\" trong danh sách và bật lên", Toast.LENGTH_LONG).show()
+        }
+        if (prefs.getBoolean("accessibility_disclosure", false)) return open()
+        AlertDialog.Builder(this)
+            .setTitle("AutoClicker cần quyền Trợ năng")
+            .setMessage(
+                "AutoClicker dùng API Trợ năng (Accessibility Service) của Android để:\n\n" +
+                    "• Thực hiện thao tác chạm và vuốt tại các điểm BẠN tự đặt trên màn hình, chỉ khi bạn bấm ▶.\n" +
+                    "• Hiển thị bảng điều khiển nổi trên các ứng dụng khác.\n\n" +
+                    "AutoClicker KHÔNG đọc nội dung màn hình, không ghi lại những gì bạn gõ, và không thu thập " +
+                    "hay gửi dữ liệu cá nhân nào qua quyền này.\n\n" +
+                    "Bạn có thể tắt quyền bất cứ lúc nào trong Cài đặt → Trợ năng."
+            )
+            .setPositiveButton("Đồng ý") { _, _ ->
+                prefs.edit().putBoolean("accessibility_disclosure", true).apply()
+                open()
+            }
+            .setNegativeButton("Không đồng ý", null)
+            .show()
     }
 
     private fun save() {
