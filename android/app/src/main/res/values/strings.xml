@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">AutoClicker</string>
+    <string name="service_label">AutoClicker</string>
+    <string name="service_description">Cho phép AutoClicker tự động chạm vào các điểm bạn đặt trên màn hình. Ứng dụng không đọc nội dung màn hình và không thu thập dữ liệu.</string>
+</resources>
