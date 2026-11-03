@@ -14,6 +14,9 @@ Không cần root, không cần quyền "Hiển thị trên ứng dụng khác" 
 
 **Cài đặt trên điện thoại**
 1. Cài file `.apk` (cho phép "Cài ứng dụng không rõ nguồn gốc" nếu được hỏi).
+   Nếu Google Play Protect báo *"Đã chặn ứng dụng để bảo vệ thiết bị"*: mở CH Play → ảnh đại diện →
+   Play Protect → ⚙ → tắt *"Quét ứng dụng bằng Play Protect"*, cài lại APK, rồi bật Play Protect lại.
+   (Google chặn mọi app cài ngoài CH Play có xin quyền Trợ năng ở một số nước, trong đó có Việt Nam.)
 2. Mở AutoClicker → bấm **"1. Bật dịch vụ Trợ năng"** → tìm AutoClicker → bật.
    Trên Android 13+, nếu nút bật bị mờ: vào *Cài đặt → Ứng dụng → AutoClicker → ⋮ → Cho phép cài đặt bị hạn chế*, rồi bật lại.
 3. Quay lại app → **"2. Lưu & hiện bảng điều khiển nổi"**.
