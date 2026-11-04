@@ -15,6 +15,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
+import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -41,12 +42,24 @@ class AutoClickService : AccessibilityService() {
 
     private var panel: LinearLayout? = null
     private var panelParams: WindowManager.LayoutParams? = null
-    private var playButton: TextView? = null
-    private var counterView: TextView? = null
+    private var infoView: TextView? = null
+    private var expanded = false              // bảng chờ đang mở rộng các nút phụ (⋯)
     private var popup: View? = null          // bảng ⚙ hoặc 💾 đang mở (chỉ một cái một lúc)
     private val steps = mutableListOf<Step>()
 
-    private var running = false
+    /** Cập nhật đồng hồ đếm ngược mỗi giây khi có hẹn giờ (kể cả khi khoảng cách chạm dài). */
+    private val infoTicker = object : Runnable {
+        override fun run() {
+            if (state != State.RUNNING) return
+            updateInfo()
+            handler.postDelayed(this, 1000)
+        }
+    }
+
+    private enum class State { IDLE, RUNNING, PAUSED }
+    private var state = State.IDLE
+    private val running get() = state == State.RUNNING
+    private var pausedAt = 0L
     private var stepIndex = 0
     private var cyclesDone = 0
     private var actionsDone = 0L
@@ -75,33 +88,16 @@ class AutoClickService : AccessibilityService() {
     fun showOverlay() {
         if (panel != null) return
         val p = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER_HORIZONTAL
-            background = roundedBg("#E6212121", 16)
+            gravity = Gravity.CENTER
+            background = roundedBg("#E6212121", 24)
             setPadding(dp(4), dp(4), dp(4), dp(4))
         }
-        val lp = overlayParams(dp(56), WindowManager.LayoutParams.WRAP_CONTENT).apply { x = 0; y = dp(160) }
-        val handle = panelButton("≡")
-        p.addView(handle)
-        playButton = panelButton("▶") { if (running) stop() else start() }
-        p.addView(playButton)
-        counterView = TextView(this).apply {
-            textSize = 10f
-            gravity = Gravity.CENTER
-            setTextColor(Color.parseColor("#90CAF9"))
-            visibility = View.GONE
-        }
-        p.addView(counterView)
-        p.addView(panelButton("＋") { addTap() })
-        p.addView(panelButton("↗") { addSwipe() })
-        p.addView(panelButton("－") { removeLastStep() })
-        p.addView(panelButton("💾") { togglePopup("profiles", ::buildProfilesPopup) })
-        p.addView(panelButton("⚙") { togglePopup("settings", ::buildSettingsPopup) })
-        p.addView(panelButton("✕") { hideOverlay() })
-        makeDraggable(handle, p, lp)
+        val lp = overlayParams(WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT)
+            .apply { x = 0; y = dp(160) }
         wm.addView(p, lp)
         panel = p
         panelParams = lp
+        renderPanel()
         if (steps.isEmpty()) addTap()
     }
 
@@ -112,8 +108,102 @@ class AutoClickService : AccessibilityService() {
         panel?.let { runCatching { wm.removeView(it) } }
         panel = null
         panelParams = null
-        playButton = null
-        counterView = null
+        infoView = null
+    }
+
+    /**
+     * Dựng lại bảng nổi theo trạng thái:
+     *  - Chờ:      cột dọc gọn ≡ ▶ ＋ ↗ ⋯ (bấm ⋯ để hiện thêm － 💾 ⚙ ✕).
+     *  - Đang chạy: viên thuốc nhỏ [⏸ | số lần · vòng].
+     *  - Tạm dừng:  [▶ ■ | số lần · vòng].
+     */
+    private fun renderPanel() {
+        val p = panel ?: return
+        val lp = panelParams ?: return
+        p.removeAllViews()
+        infoView = null
+        when (state) {
+            State.IDLE -> {
+                p.orientation = LinearLayout.VERTICAL
+                val handle = dragStrip()
+                p.addView(handle)
+                p.addView(panelButton("▶") { start() })
+                p.addView(panelButton("＋") { addTap() })
+                p.addView(panelButton("↗") { addSwipe() })
+                if (expanded) {
+                    p.addView(panelButton("－") { removeLastStep() })
+                    p.addView(panelButton("💾") { togglePopup("profiles", ::buildProfilesPopup) })
+                    p.addView(panelButton("⚙") { togglePopup("settings", ::buildSettingsPopup) })
+                    p.addView(panelButton("✕") { hideOverlay() })
+                }
+                p.addView(panelButton(if (expanded) "▴" else "⋯") {
+                    expanded = !expanded
+                    if (!expanded) closePopup()
+                    renderPanel()
+                })
+                makeDraggable(handle, p, lp)
+            }
+            State.RUNNING, State.PAUSED -> {
+                p.orientation = LinearLayout.HORIZONTAL
+                if (state == State.RUNNING) {
+                    p.addView(roundButton("⏸", "#FB8C00") { pause() })
+                } else {
+                    p.addView(roundButton("▶", "#43A047") { resume() })
+                    p.addView(roundButton("■", "#E53935") { stop() })
+                }
+                val info = TextView(this).apply {
+                    textSize = 12f
+                    setTextColor(Color.WHITE)
+                    setPadding(dp(8), 0, dp(10), 0)
+                    minWidth = dp(76)
+                }
+                p.addView(info, LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT, dp(40)).apply { gravity = Gravity.CENTER_VERTICAL })
+                info.gravity = Gravity.CENTER_VERTICAL
+                infoView = info
+                updateInfo()
+                // Kéo vùng chữ để di chuyển viên thuốc.
+                makeDraggable(info, p, lp)
+            }
+        }
+        runCatching { wm.updateViewLayout(p, lp) }
+    }
+
+    /** "128 lần" / "Vòng 3/10 · còn 4:12". */
+    private fun updateInfo() {
+        val v = infoView ?: return
+        val limit = settings.repeatCount
+        val round = (cyclesDone + 1).coerceAtMost(if (limit > 0) limit else Int.MAX_VALUE)
+        val line2 = buildString {
+            append("Vòng $round/${if (limit > 0) limit else "∞"}")
+            val stopMin = settings.stopAfterMin
+            if (stopMin > 0) {
+                val now = if (state == State.PAUSED) pausedAt else SystemClock.elapsedRealtime()
+                val left = ((stopMin * 60_000L - (now - startedAt)) / 1000).coerceAtLeast(0)
+                append(" · còn %d:%02d".format(left / 60, left % 60))
+            }
+        }
+        v.text = "$actionsDone lần\n$line2"
+    }
+
+    /** Thanh kéo: vạch nhỏ nhưng vùng chạm cao 24dp cho dễ kéo. */
+    private fun dragStrip() = FrameLayout(this).apply {
+        layoutParams = LinearLayout.LayoutParams(dp(48), dp(24))
+        addView(View(context).apply { background = roundedBg("#9E9E9E", 3) },
+            FrameLayout.LayoutParams(dp(26), dp(5), Gravity.CENTER))
+    }
+
+    private fun roundButton(label: String, color: String, onClick: () -> Unit) = TextView(this).apply {
+        text = label
+        gravity = Gravity.CENTER
+        textSize = 16f
+        setTextColor(Color.WHITE)
+        background = GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(Color.parseColor(color))
+        }
+        layoutParams = LinearLayout.LayoutParams(dp(40), dp(40)).apply { setMargins(dp(2), 0, dp(2), 0) }
+        setOnClickListener { onClick() }
     }
 
     // ---------- Các bước ----------
@@ -190,24 +280,42 @@ class AutoClickService : AccessibilityService() {
             return
         }
         closePopup()
-        running = true
         stepIndex = 0
         cyclesDone = 0
         actionsDone = 0
         startedAt = SystemClock.elapsedRealtime()
-        playButton?.text = "■"
-        counterView?.apply { text = "0"; visibility = View.VISIBLE }
+        state = State.RUNNING
+        renderPanel()
+        if (settings.stopAfterMin > 0) handler.postDelayed(infoTicker, 1000)
         setMarkersTouchable(false)
         // Chờ một nhịp để hệ thống áp dụng FLAG_NOT_TOUCHABLE trước khi chạm.
         handler.postDelayed(::tick, 100)
     }
 
-    fun stop() {
-        if (!running) return
-        running = false
+    /** Tạm dừng: giữ nguyên bước, số lần và thời gian đã chạy để tiếp tục sau. */
+    private fun pause() {
+        if (state != State.RUNNING) return
+        state = State.PAUSED
+        pausedAt = SystemClock.elapsedRealtime()
         handler.removeCallbacksAndMessages(null)
-        playButton?.text = "▶"
+        renderPanel()
+    }
+
+    private fun resume() {
+        if (state != State.PAUSED) return
+        startedAt += SystemClock.elapsedRealtime() - pausedAt   // không tính thời gian tạm dừng vào hẹn giờ
+        state = State.RUNNING
+        renderPanel()
+        if (settings.stopAfterMin > 0) handler.postDelayed(infoTicker, 1000)
+        handler.postDelayed(::tick, 100)
+    }
+
+    fun stop() {
+        if (state == State.IDLE) return
+        state = State.IDLE
+        handler.removeCallbacksAndMessages(null)
         setMarkersTouchable(true)
+        renderPanel()
     }
 
     private fun center(v: View): Pair<Float, Float> {
@@ -246,9 +354,10 @@ class AutoClickService : AccessibilityService() {
     }
 
     private fun scheduleNext() {
-        if (!running) return
+        // Vẫn ghi nhận thao tác vừa xong nếu người dùng bấm ⏸ giữa chừng, để khi chạy tiếp không lặp lại bước đó.
+        if (state == State.IDLE) return
         actionsDone++
-        counterView?.text = actionsDone.toString()
+        updateInfo()
 
         val stopMin = settings.stopAfterMin
         if (stopMin > 0 && SystemClock.elapsedRealtime() - startedAt >= stopMin * 60_000L) {
@@ -267,7 +376,7 @@ class AutoClickService : AccessibilityService() {
                 return
             }
         }
-        handler.postDelayed(::tick, settings.intervalMs)
+        if (running) handler.postDelayed(::tick, settings.intervalMs)
     }
 
     // ---------- Bảng nổi phụ (⚙ cài đặt, 💾 kịch bản) ----------
